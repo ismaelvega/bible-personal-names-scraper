@@ -227,6 +227,15 @@ export async function getUsageStats() {
                 }
             }
         }
+
+        console.log("Usage data fetched:", {
+            date: startOfDay.toISOString().split('T')[0],
+            input_tokens: totalInputTokens,
+            output_tokens: totalOutputTokens,
+            total_tokens: totalInputTokens + totalOutputTokens,
+            requests: totalRequests,
+            raw: JSON.stringify(data)
+        });
         
         return {
             date: startOfDay.toISOString().split('T')[0],

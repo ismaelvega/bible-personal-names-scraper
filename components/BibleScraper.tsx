@@ -4,6 +4,10 @@ import { useState, useEffect, useRef } from 'react';
 import { getBooksList, processVerse, reprocessVerse, getExtractedNames, getVersesForName, getUsageStats, getChapterStats, getBookStats, getFullChapterContent, deleteName } from '@/app/actions';
 import { Book } from '@/lib/bible';
 
+// Token thresholds
+const TOKEN_WARNING_THRESHOLD = 2_300_000;  // 2.3M - show warning
+const TOKEN_LIMIT_THRESHOLD = 2_500_000;    // 2.5M - stop all processing
+
 interface ChapterStats {
   total: number;
   processed: number;
@@ -64,6 +68,7 @@ export default function BibleScraper() {
   
   // Name explorer
   const [allNames, setAllNames] = useState<ExtractedName[]>([]);
+  const [nameFilter, setNameFilter] = useState<string>('');
   const [selectedName, setSelectedName] = useState<string>('');
   const [nameReferences, setNameReferences] = useState<string[]>([]);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
@@ -71,6 +76,8 @@ export default function BibleScraper() {
   
   // Usage
   const [usageStats, setUsageStats] = useState<any>(null);
+  const [usageLoading, setUsageLoading] = useState<boolean>(false);
+  const [usageError, setUsageError] = useState<string | null>(null);
   const [processedCount, setProcessedCount] = useState<number>(0);
 
   const contentRef = useRef<HTMLDivElement>(null);
@@ -84,16 +91,41 @@ export default function BibleScraper() {
     });
     // load names (objects with type) and usage
     getExtractedNames().then((list) => setAllNames(list as ExtractedName[]));
-    getUsageStats().then(setUsageStats);
+    updateUsage();
   }, []);
 
   const updateUsage = async () => {
+    setUsageLoading(true);
+    setUsageError(null);
     try {
       const u = await getUsageStats();
+      if ((u as any)?.error) {
+        setUsageError((u as any).error);
+      }
       setUsageStats(u);
     } catch (e) {
       console.error('Error updating usage', e);
+      setUsageError('No se pudo actualizar usage');
     }
+    setUsageLoading(false);
+  };
+
+  // Token limit helpers
+  const getCurrentTokens = (): number => {
+    return usageStats?.total_tokens || 0;
+  };
+
+  const isAtWarningThreshold = (): boolean => {
+    const tokens = getCurrentTokens();
+    return tokens >= TOKEN_WARNING_THRESHOLD && tokens < TOKEN_LIMIT_THRESHOLD;
+  };
+
+  const isAtLimitThreshold = (): boolean => {
+    return getCurrentTokens() >= TOKEN_LIMIT_THRESHOLD;
+  };
+
+  const canProcess = (): boolean => {
+    return !isAtLimitThreshold();
   };
 
   const mergeNames = (newEntries: ExtractedName[] | undefined) => {
@@ -144,7 +176,7 @@ export default function BibleScraper() {
   };
 
   const handleProcessVerse = async (verseNum: number) => {
-    if (processingVerse || isBatchProcessing || isBookProcessing) return;
+    if (processingVerse || isBatchProcessing || isBookProcessing || !canProcess()) return;
     setProcessingVerse(verseNum);
     try {
       const result = await processVerse(selectedBook, selectedChapter, verseNum);
@@ -172,7 +204,7 @@ export default function BibleScraper() {
   };
 
   const handleReprocessVerse = async (verseNum: number) => {
-    if (processingVerse || reprocessingVerse || isBatchProcessing || isBookProcessing) return;
+    if (processingVerse || reprocessingVerse || isBatchProcessing || isBookProcessing || !canProcess()) return;
     setReprocessingVerse(verseNum);
     try {
       const result = await reprocessVerse(selectedBook, selectedChapter, verseNum);
@@ -193,7 +225,7 @@ export default function BibleScraper() {
   };
 
   const handleBatchProcess = async () => {
-    if (isBatchProcessing || !selectedBook || !selectedChapter) return;
+    if (isBatchProcessing || !selectedBook || !selectedChapter || !canProcess()) return;
     
     const unprocessedVerses = chapterVerses.filter(v => !verseStatuses[v.verse]?.processed);
     if (unprocessedVerses.length === 0) return;
@@ -202,8 +234,15 @@ export default function BibleScraper() {
     setBatchProgress({ current: 0, total: unprocessedVerses.length });
     
     let localProcessedCount = processedCount;
+    let stoppedByLimit = false;
     
     for (let i = 0; i < unprocessedVerses.length; i++) {
+      // Check token limit before each verse
+      if (isAtLimitThreshold()) {
+        stoppedByLimit = true;
+        break;
+      }
+      
       const v = unprocessedVerses[i];
       try {
         const result = await processVerse(selectedBook, selectedChapter, v.verse);
@@ -218,7 +257,7 @@ export default function BibleScraper() {
         if (!result.alreadyProcessed) {
           localProcessedCount++;
           if (localProcessedCount % 10 === 0) {
-            updateUsage();
+            await updateUsage();
           }
         }
       } catch (error) {
@@ -229,6 +268,10 @@ export default function BibleScraper() {
     
     setProcessedCount(localProcessedCount);
     setIsBatchProcessing(false);
+    if (stoppedByLimit) {
+      await updateUsage();
+      alert('⚠️ Procesamiento detenido: se alcanzó el límite de 2.5M tokens.');
+    }
     getExtractedNames().then((list) => setAllNames(list as ExtractedName[]));
     updateUsage();
     loadChapterContent();
@@ -236,7 +279,7 @@ export default function BibleScraper() {
   };
 
   const handleBookProcess = async () => {
-    if (isBookProcessing || isBatchProcessing || !selectedBook) return;
+    if (isBookProcessing || isBatchProcessing || !selectedBook || !canProcess()) return;
     
     const book = books.find(b => b.key === selectedBook);
     if (!book) return;
@@ -245,8 +288,16 @@ export default function BibleScraper() {
     setBookProgress({ currentChapter: 0, totalChapters: book.chapters, currentVerse: 0, totalVerses: 0 });
     
     let localProcessedCount = processedCount;
+    let stoppedByLimit = false;
     
+    outerLoop:
     for (let chap = 1; chap <= book.chapters; chap++) {
+      // Check token limit before each chapter
+      if (isAtLimitThreshold()) {
+        stoppedByLimit = true;
+        break;
+      }
+      
       setBookProgress(prev => ({ ...prev, currentChapter: chap }));
       
       // Switch to current chapter being processed for real-time visualization
@@ -271,6 +322,12 @@ export default function BibleScraper() {
       setBookProgress(prev => ({ ...prev, currentVerse: 0, totalVerses: unprocessedVerses.length }));
       
       for (let i = 0; i < unprocessedVerses.length; i++) {
+        // Check token limit before each verse
+        if (isAtLimitThreshold()) {
+          stoppedByLimit = true;
+          break outerLoop;
+        }
+        
         const v = unprocessedVerses[i];
         try {
           const result = await processVerse(selectedBook, chap, v.verse);
@@ -287,7 +344,7 @@ export default function BibleScraper() {
           if (!result.alreadyProcessed) {
             localProcessedCount++;
             if (localProcessedCount % 10 === 0) {
-              updateUsage();
+              await updateUsage();
             }
           }
         } catch (error) {
@@ -306,6 +363,10 @@ export default function BibleScraper() {
     
     setProcessedCount(localProcessedCount);
     setIsBookProcessing(false);
+    if (stoppedByLimit) {
+      await updateUsage();
+      alert('⚠️ Procesamiento detenido: se alcanzó el límite de 2.5M tokens.');
+    }
     getExtractedNames().then((list) => setAllNames(list as ExtractedName[]));
     updateUsage();
     loadBookStats(selectedBook);
@@ -350,6 +411,10 @@ export default function BibleScraper() {
     return stats?.percentage || 0;
   };
 
+  const filteredNames = nameFilter
+    ? allNames.filter(entry => entry.name.toLowerCase().includes(nameFilter.trim().toLowerCase()))
+    : allNames;
+
   return (
     <div className="h-screen flex flex-col bg-slate-100">
       {/* Header */}
@@ -359,10 +424,49 @@ export default function BibleScraper() {
           Extractor de Nombres Bíblicos
         </h1>
         <div className="flex items-center gap-4 text-xs">
-          {usageStats && !usageStats.error && (
-            <div className="flex items-center gap-3 bg-slate-100 px-3 py-1.5 rounded-lg">
+          {usageLoading ? (
+            <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-lg text-slate-600">
+              <svg className="animate-spin h-3 w-3" fill="none" viewBox="0 0 24 24">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+              </svg>
+              Actualizando...
+            </div>
+          ) : usageError ? (
+            <div className="flex items-center gap-2 bg-red-50 px-3 py-1.5 rounded-lg text-red-700 border border-red-200">
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+              </svg>
+              {usageError}
+            </div>
+          ) : usageStats && !usageStats.error && (
+            <div className={`flex items-center gap-3 px-3 py-1.5 rounded-lg ${
+              isAtLimitThreshold() 
+                ? 'bg-red-100 border border-red-300' 
+                : isAtWarningThreshold() 
+                ? 'bg-amber-100 border border-amber-300' 
+                : 'bg-slate-100'
+            }`}>
+              {isAtLimitThreshold() && (
+                <span className="text-red-600 font-bold flex items-center gap-1">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
+                  </svg>
+                  LÍMITE
+                </span>
+              )}
+              {isAtWarningThreshold() && (
+                <span className="text-amber-600 font-bold flex items-center gap-1">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                  </svg>
+                  AVISO
+                </span>
+              )}
               <span className="text-slate-500">Tokens:</span>
-              <span className="font-mono font-bold text-emerald-600">{usageStats.total_tokens?.toLocaleString() || 0}</span>
+              <span className={`font-mono font-bold ${
+                isAtLimitThreshold() ? 'text-red-600' : isAtWarningThreshold() ? 'text-amber-600' : 'text-emerald-600'
+              }`}>{usageStats.total_tokens?.toLocaleString() || 0}</span>
               <span className="text-slate-300">|</span>
               <span className="text-slate-500">Requests:</span>
               <span className="font-mono font-bold text-blue-600">{usageStats.requests?.toLocaleString() || 0}</span>
@@ -370,10 +474,11 @@ export default function BibleScraper() {
           )}
           <button
             onClick={updateUsage}
-            className="text-xs bg-slate-100 px-3 py-1.5 rounded-lg hover:bg-slate-200 transition-colors"
+            className="text-xs bg-slate-100 px-3 py-1.5 rounded-lg hover:bg-slate-200 transition-colors disabled:opacity-60"
+            disabled={usageLoading}
             title="Actualizar usage"
           >
-            Actualizar usage
+            {usageLoading ? 'Actualizando...' : 'Actualizar usage'}
           </button>
         </div>
       </header>
@@ -387,11 +492,11 @@ export default function BibleScraper() {
             <h2 className="text-xs font-semibold text-slate-600 uppercase tracking-wider">Libros</h2>
             <button
               onClick={handleBookProcess}
-              disabled={isBookProcessing || isBatchProcessing || !selectedBook || getBookPercentage(selectedBook) === 100}
-              className="p-1 rounded hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-              title="Procesar libro completo"
+              disabled={isBookProcessing || isBatchProcessing || !selectedBook || getBookPercentage(selectedBook) === 100 || !canProcess()}
+              className={`p-1 rounded hover:bg-slate-200 disabled:opacity-40 disabled:cursor-not-allowed transition-colors ${!canProcess() ? 'cursor-not-allowed' : ''}`}
+              title={!canProcess() ? 'Límite de tokens alcanzado' : 'Procesar libro completo'}
             >
-              <svg className="w-4 h-4 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className={`w-4 h-4 ${!canProcess() ? 'text-red-400' : 'text-blue-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
               </svg>
             </button>
@@ -514,8 +619,13 @@ export default function BibleScraper() {
             </div>
             <button
               onClick={handleBatchProcess}
-              disabled={isBatchProcessing || isBookProcessing || loadingChapter || chapterVerses.filter(v => !verseStatuses[v.verse]?.processed).length === 0}
-              className="inline-flex items-center gap-2 bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-medium hover:bg-purple-700 disabled:bg-slate-300 disabled:cursor-not-allowed transition-colors"
+              disabled={isBatchProcessing || isBookProcessing || loadingChapter || chapterVerses.filter(v => !verseStatuses[v.verse]?.processed).length === 0 || !canProcess()}
+              className={`inline-flex items-center gap-2 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                !canProcess() 
+                  ? 'bg-red-400 cursor-not-allowed' 
+                  : 'bg-purple-600 hover:bg-purple-700 disabled:bg-slate-300 disabled:cursor-not-allowed'
+              }`}
+              title={!canProcess() ? 'Límite de tokens alcanzado' : 'Procesar todos los versículos'}
             >
               {isBatchProcessing ? (
                 <>
@@ -524,6 +634,13 @@ export default function BibleScraper() {
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"/>
                   </svg>
                   {batchProgress.current}/{batchProgress.total}
+                </>
+              ) : !canProcess() ? (
+                <>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
+                  </svg>
+                  Límite
                 </>
               ) : (
                 <>
@@ -622,14 +739,22 @@ export default function BibleScraper() {
                           {!isProcessed && !isBatchProcessing && !isBookProcessing && (
                             <button
                               onClick={() => handleProcessVerse(v.verse)}
-                              disabled={isProcessing}
-                              className="p-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:bg-slate-300 transition-colors"
-                              title="Procesar versículo"
+                              disabled={isProcessing || !canProcess()}
+                              className={`p-2 rounded-lg text-white transition-colors ${
+                                !canProcess() 
+                                  ? 'bg-red-400 cursor-not-allowed' 
+                                  : 'bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300'
+                              }`}
+                              title={!canProcess() ? 'Límite de tokens alcanzado' : 'Procesar versículo'}
                             >
                               {isProcessing ? (
                                 <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
                                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                </svg>
+                              ) : !canProcess() ? (
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
                                 </svg>
                               ) : (
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -641,14 +766,22 @@ export default function BibleScraper() {
                           {isProcessed && !isBatchProcessing && !isBookProcessing && (
                             <button
                               onClick={() => handleReprocessVerse(v.verse)}
-                              disabled={reprocessingVerse === v.verse}
-                              className="p-2 rounded-lg bg-amber-500 text-white hover:bg-amber-600 disabled:bg-slate-300 transition-colors"
-                              title="Reprocesar versículo"
+                              disabled={reprocessingVerse === v.verse || !canProcess()}
+                              className={`p-2 rounded-lg text-white transition-colors ${
+                                !canProcess() 
+                                  ? 'bg-red-400 cursor-not-allowed' 
+                                  : 'bg-amber-500 hover:bg-amber-600 disabled:bg-slate-300'
+                              }`}
+                              title={!canProcess() ? 'Límite de tokens alcanzado' : 'Reprocesar versículo'}
                             >
                               {reprocessingVerse === v.verse ? (
                                 <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24">
                                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
                                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                                </svg>
+                              ) : !canProcess() ? (
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"/>
                                 </svg>
                               ) : (
                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -671,7 +804,7 @@ export default function BibleScraper() {
         <div className="w-72 bg-white border-l border-slate-200 flex flex-col shrink-0">
           <div className="px-3 py-2 bg-slate-50 border-b border-slate-200">
             <h2 className="text-xs font-semibold text-slate-600 uppercase tracking-wider">
-              Nombres ({allNames.length})
+              Nombres ({filteredNames.length}/{allNames.length})
             </h2>
             <div className="flex gap-2 mt-1 text-[10px]">
               <span className="flex items-center gap-1 text-emerald-600">
@@ -688,12 +821,23 @@ export default function BibleScraper() {
                 Lugares
               </span>
             </div>
+            <div className="mt-2">
+              <input
+                type="text"
+                value={nameFilter}
+                onChange={(e) => setNameFilter(e.target.value)}
+                placeholder="Filtrar nombres..."
+                className="w-full px-2 py-1.5 text-sm border border-slate-300 rounded text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+              />
+            </div>
           </div>
           <div className="flex-1 overflow-y-auto">
             {allNames.length === 0 ? (
               <p className="text-slate-400 text-sm p-4 text-center">No hay nombres extraídos aún</p>
+            ) : filteredNames.length === 0 ? (
+              <p className="text-slate-400 text-sm p-4 text-center">Sin coincidencias para el filtro</p>
             ) : (
-              allNames.map((entry, idx) => (
+              filteredNames.map((entry, idx) => (
                 <button
                   key={`${entry.name}-${idx}`}
                   onClick={() => handleNameSelect(entry.name)}
