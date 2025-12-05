@@ -1,36 +1,63 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+## Extractor de Nombres Bíblicos
 
-## Getting Started
+Aplicación Next.js para extraer nombres propios de la Biblia (personas y lugares), usando OpenAI y una base local SQLite con datos en `public/bible_data`.
 
-First, run the development server:
+### Características principales
+- Procesar versículos, capítulos completos o libros completos con actualización en tiempo real (badges de nombres aparecen mientras se procesa).
+- Clasificación de nombres: `person` vs `place`; exclusión de divinidades, sustantivos genéricos y gentilicios.
+- Prompt con contexto del versículo anterior para desambiguar genealogías y nombres compuestos.
+- Reprocesar un versículo individual (borra y recalcula resultados).
+- Explorador de nombres con referencias y opción de eliminar un nombre.
+- Métricas de uso bajo demanda (tokens / requests).
 
+### Requisitos
+- Node.js 18+
+- pnpm (recomendado)
+- Clave de OpenAI
+
+### Configuración
+1) Instala dependencias
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+pnpm install
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+2) Crea `.env.local`
+```env
+OPENAI_API_KEY=tu_clave
+# Opcional para estadísticas administradas
+OPENAI_ADMIN_KEY=tu_clave_admin
+```
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+### Ejecutar en desarrollo
+```bash
+pnpm dev
+# abre http://localhost:3000
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+### Uso rápido
+1) Selecciona libro y capítulo en la UI.
+2) Opciones de proceso:
+   - Versículo: botón azul por cada verso.
+   - Capítulo: botón “Procesar Todo”.
+   - Libro: botón ⚡ en la cabecera de “Libros” (muestra progreso cap a cap en tiempo real).
+3) Reprocesar: botón ámbar 🔄 en versos ya procesados (relee con el prompt actual).
+4) Eliminar nombre: ícono de basura en el explorador de nombres.
+5) Actualizar usage: botón en el header (tokens/requests).
 
-## Learn More
+### Datos y base
+- Textos bíblicos en `public/bible_data` (JSON por libro).
+- SQLite manejada con `better-sqlite3` (tablas: `processed_verses`, `extracted_names`).
 
-To learn more about Next.js, take a look at the following resources:
+### Prompt (resumen)
+- Extrae solo nombres propios de personas y lugares.
+- Excluye divinidades, genéricos, fenómenos naturales y todos los gentilicios.
+- Usa el versículo anterior como contexto; en genealogías, los nombres (incluso con sufijo “-im”) son personas.
+- Salida estricta JSON: `{ "names": [{ "name": string, "type": "person" | "place" }] }`.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+### Scripts útiles
+- `pnpm dev` — servidor de desarrollo
+- `pnpm lint` — linting
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+### Notas
+- Los capítulos están filtrados según el índice `_index.json`; algunos libros pueden omitirse.
+- Si cambias los datos de `public/bible_data`, reinicia para recargar el contenido en memoria.
