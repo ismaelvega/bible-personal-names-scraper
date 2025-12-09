@@ -5,8 +5,8 @@ import { getBooksList, processVerse, reprocessVerse, getExtractedNames, getVerse
 import { Book } from '@/lib/bible';
 
 // Token thresholds
-const TOKEN_WARNING_THRESHOLD = 2_300_000;  // 2.3M - show warning
-const TOKEN_LIMIT_THRESHOLD = 2_500_000;    // 2.5M - stop all processing
+const TOKEN_WARNING_THRESHOLD = 2_100_000;  // 2.1M - show warning
+const TOKEN_LIMIT_THRESHOLD = 2_300_000;    // 2.3M - stop all processing
 
 interface ChapterStats {
   total: number;
@@ -188,7 +188,12 @@ export default function BibleScraper() {
       // merge names into sidebar immediately to simulate realtime
       mergeNames(result.names as ExtractedName[]);
 
-      if (!result.alreadyProcessed) {
+      // Log if verse was skipped (no LLM call)
+      if ((result as any).skipped) {
+        console.log(`Verse ${verseNum} skipped (no proper names potential)`);
+      }
+
+      if (!result.alreadyProcessed && !(result as any).skipped) {
         setProcessedCount(prev => {
           const newCount = prev + 1;
           if (newCount % 10 === 0) updateUsage();
@@ -254,7 +259,7 @@ export default function BibleScraper() {
         // merge names into sidebar in realtime
         mergeNames(result.names as ExtractedName[]);
 
-        if (!result.alreadyProcessed) {
+        if (!result.alreadyProcessed && !(result as any).skipped) {
           localProcessedCount++;
           if (localProcessedCount % 10 === 0) {
             await updateUsage();
@@ -341,7 +346,7 @@ export default function BibleScraper() {
           // merge names into sidebar in realtime
           mergeNames(result.names as ExtractedName[]);
           
-          if (!result.alreadyProcessed) {
+          if (!result.alreadyProcessed && !(result as any).skipped) {
             localProcessedCount++;
             if (localProcessedCount % 10 === 0) {
               await updateUsage();
@@ -730,6 +735,18 @@ export default function BibleScraper() {
                                   {entry.name}
                                 </span>
                               ))}
+                            </div>
+                          )}
+                          
+                          {/* Skipped badge - shown when processed but no names found */}
+                          {isProcessed && names.length === 0 && (
+                            <div className="mt-2">
+                              <span className="px-2 py-0.5 rounded text-xs font-medium flex items-center gap-1 bg-slate-100 text-slate-500 w-fit">
+                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/>
+                                </svg>
+                                saltado
+                              </span>
                             </div>
                           )}
                         </div>

@@ -5,6 +5,91 @@ import { extractNames, ExtractedName } from '@/lib/openai';
 import db from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 
+// Helper function to check if a verse likely contains proper names
+function hasProperNamesPotential(text: string): boolean {
+  // List of divine references to exclude from capitalization check
+  const divineNames = [
+    'Dios', 'Jehová', 'Yahvé', 'Adonai', 'Señor', 'SEÑOR',
+    'Altísimo', 'Todopoderoso', 'Omnipotente', 'Eterno',
+    'Santo', 'Creador', 'Padre', 'Espíritu'
+  ];
+  
+  // Common Spanish words/connectors that appear capitalized due to position, not proper names
+  const commonCapitalizedWords = [
+    // Conjunciones y conectores
+    'Y', 'E', 'O', 'U', 'Pero', 'Mas', 'Sino', 'Aunque', 'Ni', 'Porque', 'Por', 'Pues', 'De',
+    // Condicionales y temporales
+    'Si', 'Cuando', 'Mientras', 'Antes', 'Después', 'Entonces', 'Luego', 'Hasta', 'Nunca',
+    'Siempre', 'Ayer', 'Hoy', 'Mañana',
+    // Adverbios
+    'Así', 'También', 'Tampoco', 'Ahora', 'Allí', 'Aquí', 'Donde', 'Como', 'Tan', 'Así', 'Aun', 'Aún', 'Cualquiera', 'Nadie',
+    // Pronombres y artículos
+    'El', 'La', 'Los', 'Las', 'Un', 'Una', 'Unos', 'Unas', 'Él', 'Ella', 'Ellos', 'Ellas', 'Nosotros', 'Nosotras', 'Vosotros', 'Vosotras',
+    'Este', 'Esta', 'Estos', 'Estas', 'Ese', 'Esa', 'Esos', 'Esas', 'Aquel', 'Aquella', 'Aquellos', 'Aquellas',
+    'Lo', 'Le', 'Les', 'Me', 'Te', 'Se', 'Nos', 'Os',
+    'Que', 'Quien', 'Quienes', 'Cual', 'Cuales', 'Cuyo', 'Cuya', 'Cuyos', 'Cuyas',
+    // Preposiciones
+    'A', 'De', 'En', 'Con', 'Por', 'Para', 'Sin', 'Sobre', 'Tras', 'Bajo', 'Hacia', 'Desde',
+    // Verbos auxiliares y comunes en inicio de frase
+    'Ha', 'He', 'Han', 'Hay', 'Has',
+    'Fue', 'Es', 'Son', 'Era', 'Eran', 'Sea', 'Sean',
+    'Está', 'Están', 'Estaba', 'Estaban', 'Esté', 'Estén',
+    'Había', 'Habían', 'Haya', 'Hayan', 'Hizo', 'Hicieron', 'Hace', 'Hacen',
+    'Haré', 'Harás', 'Hará', 'Haremos', 'Haréis', 'Harán',
+    'Habrá', 'Habrán', 'Habremos',
+    'Dijo', 'Dijeron', 'Dice', 'Dicen', 'Di', 'Da', 'Dad', 'Den',
+    'Ven', 'Ved', 'Vio', 'Vieron', 'Ve', 'Vayan', 'Vaya',
+    'Toma', 'Tomad', 'Tomen', 'Tomó', 'Tomaron',
+    'Pues', 'Porque', 'Ya', 'Aún', 'Más', 'Menos', 'Mucho', 'Poco', 'Todo', 'Toda', 'Todos', 'Todas',
+    'No', 'Sí', 'Tal', 'Vez', 'Bien', 'Mal', 'Según', 'Entre',
+    // Imperativos comunes bíblicos
+    'Oye', 'Oíd', 'Escucha', 'Escuchad', 'Simplemente', 'Verdaderamente', 'Realmente', 'Ciertamente', 'Mirad', 'Guarda', 'Guardad', 'Guardaréis',
+    'Camina', 'Caminad', 'Cree', 'Creed', 'Cread', 'Orad', 'Ora', 'Habla', 'Hablad',
+    'Daos', 'Dáos', 'Perdona', 'Perdonad', 'Perdonen', 'Sigue', 'Seguid', 'Busca', 'Buscad',
+    'Llama', 'Llamad', 'Lleven', 'Lleva', 'Ayuda', 'Ayudad', 'Confía', 'Confíad',
+    'Levanta', 'Levantad', 'Canta', 'Cantad', 'Bendice', 'Bendecid", "Glorifica", "Glorificad',
+    'Ama', 'Amad', 'Teme', 'Temed', 'Honra', 'Honrad', 'Alaba', 'Alabad', 'Tendré', 'Tendrás', 'Tendrá', 'Tendremos', 'Tendréis', 'Tendrán',
+
+    // cuestiones
+    'Cuándo', 'Dónde', 'Cómo', 'Por qué', 'Cuál', 'Cuáles', 'Quién', 'Quiénes', 'Qué',
+
+    'Esforzaos', 'Alegraos', 'Regocijaos', 'Gozaos', 'Descansa', 'Descansad', 'Trabaja', 'Trabajad',
+    'Vive', 'Vivid', 'Muere', 'Morid', 'Persevera', 'Perseverad', 'Lucha', 'Luchad', 'Resiste', 'Resistid',
+    'Sana', 'Sanad', 'Cura', 'Curad', 'Protege', 'Proteged', 'Libera', 'Liberad',
+    'Construye', 'Construid', 'Edifica', 'Edificad', 'Siembra', 'Sembrad', 'Cosecha', 'Cosechad',
+    'Solamente', 'Simplemente', 'Verdaderamente', 'Realmente', 'Ciertamente',
+  ];
+  
+  // Remove divine references and common capitalized words temporarily for analysis
+  let cleanedText = text;
+
+  // Helper to escape regex special chars in words
+  const escapeRegex = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  // Use Unicode-safe word boundaries: no letter before/after
+  const removeWordList = (source: string, words: string[]) => {
+    let result = source;
+    for (const word of words) {
+      const escaped = escapeRegex(word);
+      const regex = new RegExp(`(?<!\\p{L})${escaped}(?!\\p{L})`, 'giu');
+      result = result.replace(regex, '');
+    }
+    return result;
+  };
+
+  // Remove divine names (Unicode safe)
+  cleanedText = removeWordList(cleanedText, divineNames);
+
+  // Remove common capitalized words (Unicode safe)
+  cleanedText = removeWordList(cleanedText, commonCapitalizedWords);
+  
+  // Check if there are ANY remaining capital letters (potential proper names)
+  // Use a regex to find any uppercase letter (including accented: ÁÉÍÓÚÑ)
+  const hasCapitals = /[A-ZÁÉÍÓÚÑ]/.test(cleanedText);
+  
+  return hasCapitals;
+}
+
 export async function getBooksList() {
   return getBooks();
 }
@@ -59,6 +144,17 @@ export async function processVerse(book: string, chapter: number, verse: number)
   const text = getVerseText(book, chapter, verse);
   if (!text) throw new Error("Verse not found");
 
+  // Check if verse has potential for proper names
+  if (!hasProperNamesPotential(text)) {
+    // Mark as processed but skip LLM call (no names to extract)
+    const insertVerse = db.prepare('INSERT INTO processed_verses (id, processed_at) VALUES (?, ?)');
+    insertVerse.run(verseRef, new Date().toISOString());
+    
+    console.log(`[Skip] Verse ${verseRef}: no proper names detected (no LLM call)`);
+    revalidatePath('/');
+    return { processed: true, names: [], alreadyProcessed: false, skipped: true };
+  }
+
   // Get previous verse for context (if exists)
   let previousVerse: string | undefined;
   if (verse > 1) {
@@ -82,7 +178,7 @@ export async function processVerse(book: string, chapter: number, verse: number)
   transaction();
   
   revalidatePath('/'); 
-  return { processed: true, names: extractedNames, alreadyProcessed: false };
+  return { processed: true, names: extractedNames, alreadyProcessed: false, skipped: false };
 }
 
 export async function reprocessVerse(book: string, chapter: number, verse: number) {
@@ -100,6 +196,17 @@ export async function reprocessVerse(book: string, chapter: number, verse: numbe
   // Get text
   const text = getVerseText(book, chapter, verse);
   if (!text) throw new Error("Verse not found");
+
+  // Check if verse has potential for proper names
+  if (!hasProperNamesPotential(text)) {
+    // Mark as processed but skip LLM call (no names to extract)
+    const insertVerse = db.prepare('INSERT INTO processed_verses (id, processed_at) VALUES (?, ?)');
+    insertVerse.run(verseRef, new Date().toISOString());
+    
+    console.log(`[Skip] Reprocess ${verseRef}: no proper names detected (no LLM call)`);
+    revalidatePath('/');
+    return { processed: true, names: [], skipped: true };
+  }
 
   // Get previous verse for context (if exists)
   let previousVerse: string | undefined;
@@ -122,7 +229,7 @@ export async function reprocessVerse(book: string, chapter: number, verse: numbe
   })();
   
   revalidatePath('/'); 
-  return { processed: true, names: extractedNames };
+  return { processed: true, names: extractedNames, skipped: false };
 }
 
 export async function getExtractedNames() {
