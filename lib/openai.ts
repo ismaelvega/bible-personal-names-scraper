@@ -1,15 +1,44 @@
 import OpenAI from 'openai';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+export type LlmProvider = 'openai' | 'gemma';
+
+const activeProvider: LlmProvider =
+  (process.env.LLM_PROVIDER?.toLowerCase() as LlmProvider) === 'gemma'
+    ? 'gemma'
+    : 'openai';
+
+function getClientConfig(provider: LlmProvider) {
+  if (provider === 'gemma') {
+    const baseURL = process.env.GEMMA_API_BASE_URL;
+    if (!baseURL) throw new Error('GEMMA_API_BASE_URL is required when LLM_PROVIDER=gemma');
+
+    // vLLM/ngrok expects an Authorization: Bearer <token>; default to provided key or 'my-secret-key'
+    const apiKey = process.env.GEMMA_API_KEY || 'my-secret-key';
+    const model = process.env.GEMMA_MODEL || 'google/gemma-3-270m-it';
+    const client = new OpenAI({ apiKey, baseURL });
+
+    return { client, model, provider } as const;
+  }
+
+  // Default OpenAI
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) throw new Error('OPENAI_API_KEY is required');
+  const model = process.env.OPENAI_MODEL || 'gpt-5-nano';
+  const client = new OpenAI({ apiKey });
+
+  return { client, model, provider: 'openai' as const };
+}
 
 export interface ExtractedName {
   name: string;
   type: 'person' | 'place';
 }
 
-export async function extractNames(verseText: string, previousVerse?: string): Promise<ExtractedName[]> {
+export async function extractNames(
+  verseText: string,
+  previousVerse?: string,
+  providerOverride?: LlmProvider
+): Promise<ExtractedName[]> {
   const contextSection = previousVerse 
     ? `\n\n    CONTEXTO (versículo anterior, solo para referencia - NO extraer nombres de aquí):\n    "${previousVerse}"\n`
     : '';
@@ -40,6 +69,15 @@ export async function extractNames(verseText: string, previousVerse?: string): P
      - Si no hay nombres, devuelve: {"names": []}
      - No incluyas ningún texto adicional, explicación, ni comentarios fuera del JSON.
 
+     Ejemplo de salida correcto:
+     [OpenAI] Input: Y en cuanto al territorio de los hijos de Efraín por sus familias, el límite de su heredad al lado del oriente fue desde Atarot-adar hasta Bet-horón la de arriba.
+    [OpenAI] Previous verse context: Recibieron, pues, su heredad los hijos de José, Manasés y Efraín.
+    [OpenAI] Response: {"names": [{"name": "Efraín", "type": "person"}, {"name": "Atarot-adar", "type": "place"}, {"name": "Bet-horón", "type": "place"}]}      
+    [OpenAI] Parsed names: [
+      { name: 'Efraín', type: 'person' },
+      { name: 'Atarot-adar', type: 'place' },
+      { name: 'Bet-horón', type: 'place' }
+    ]
      Notas adicionales:
      - Mantén los acentos y la forma en que aparecen los nombres en el texto original.
      - Elimina duplicados dentro del mismo versículo.
@@ -47,30 +85,61 @@ export async function extractNames(verseText: string, previousVerse?: string): P
      - Si se proporciona contexto del versículo anterior, úsalo para entender mejor si un nombre es persona o lugar, pero SOLO extrae nombres del versículo actual.
      - En genealogías ("X engendró a Y"), los nombres son PERSONAS, incluso si terminan en "-im" (sufijo hebreo de plural/descendencia). Ejemplos: Ludim, Anamim, Lehabim, Naftuhim, Patrusim, Casluhim, Caftorim son PERSONAS (patriarcas de clanes), NO gentilicios.
      - Un gentilicio describe a habitantes actuales de un lugar (ej: "los egipcios dijeron"). Un patriarca/ancestro es una PERSONA que da origen a un pueblo.${contextSection}
+
+     Reasoning: high
     `;
 
   try {
-    const response = await openai.chat.completions.create({
-      model: "gpt-5-nano",
+    const selectedProvider = providerOverride || activeProvider;
+    const { client, model, provider } = getClientConfig(selectedProvider);
+
+    const payload = {
+      model,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: verseText }
       ],
-      response_format: { type: "json_object" },
       temperature: 1,
-    });
+      ...(provider === 'openai' ? { response_format: { type: "json_object" as const } } : {}),
+    } satisfies OpenAI.Chat.Completions.ChatCompletionCreateParams;
 
-    const content = response.choices[0].message.content;
-    console.log('[OpenAI] Input:', verseText);
-    console.log('[OpenAI] Previous verse context:', previousVerse || 'none');
-    console.log('[OpenAI] Response:', content);
+    const response = await client.chat.completions.create(payload);
+
+    const content = response.choices[0]?.message?.content;
+    console.log(`[LLM:${provider}] Input:`, verseText);
+    console.log(`[LLM:${provider}] Previous verse context:`, previousVerse || 'none');
+    console.log(`[LLM:${provider}] Response:`, content);
     if (!content) return [];
 
-    const parsed = JSON.parse(content);
-    console.log('[OpenAI] Parsed names:', parsed.names);
+    const parseContent = (raw: string) => {
+      const trimmed = raw.trim();
+      // Remove triple backtick fences if present
+      const fencedMatch = trimmed.match(/^```[a-zA-Z]*\n([\s\S]*?)```$/);
+      const unwrapped = fencedMatch ? fencedMatch[1].trim() : trimmed;
+      try {
+        return JSON.parse(unwrapped);
+      } catch (e) {
+        // Try to extract first JSON object substring
+        const objMatch = unwrapped.match(/\{[\s\S]*\}/);
+        if (objMatch) {
+          return JSON.parse(objMatch[0]);
+        }
+        throw e;
+      }
+    };
+
+    let parsed: any;
+    try {
+      parsed = parseContent(content);
+    } catch (parseError) {
+      console.warn(`[LLM:${provider}] Failed to parse JSON content`, parseError, 'raw:', content);
+      return [];
+    }
+
+    console.log(`[LLM:${provider}] Parsed names:`, parsed.names);
     return parsed.names || [];
   } catch (error) {
-    console.error("Error calling OpenAI:", error);
+    console.error(`Error calling LLM (${activeProvider}):`, error);
     throw error;
   }
 }

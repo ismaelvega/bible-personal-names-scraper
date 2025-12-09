@@ -125,7 +125,12 @@ export async function checkProcessed(book: string, chapter: number, verse: numbe
   return !!existing;
 }
 
-export async function processVerse(book: string, chapter: number, verse: number) {
+export async function processVerse(
+  book: string,
+  chapter: number,
+  verse: number,
+  provider?: 'openai' | 'gemma'
+) {
   const verseRef = `${book}-${chapter}-${verse}-rv1960`;
   
   // Check if already processed
@@ -162,7 +167,7 @@ export async function processVerse(book: string, chapter: number, verse: number)
   }
 
   // Extract names with context
-  const extractedNames = await extractNames(text, previousVerse);
+  const extractedNames = await extractNames(text, previousVerse, provider);
 
   // Save to DB
   const insertVerse = db.prepare('INSERT INTO processed_verses (id, processed_at) VALUES (?, ?)');
@@ -181,7 +186,12 @@ export async function processVerse(book: string, chapter: number, verse: number)
   return { processed: true, names: extractedNames, alreadyProcessed: false, skipped: false };
 }
 
-export async function reprocessVerse(book: string, chapter: number, verse: number) {
+export async function reprocessVerse(
+  book: string,
+  chapter: number,
+  verse: number,
+  provider?: 'openai' | 'gemma'
+) {
   const verseRef = `${book}-${chapter}-${verse}-rv1960`;
   
   // Delete existing data for this verse
@@ -215,7 +225,7 @@ export async function reprocessVerse(book: string, chapter: number, verse: numbe
   }
 
   // Extract names with context
-  const extractedNames = await extractNames(text, previousVerse);
+  const extractedNames = await extractNames(text, previousVerse, provider);
 
   // Save to DB
   const insertVerse = db.prepare('INSERT INTO processed_verses (id, processed_at) VALUES (?, ?)');

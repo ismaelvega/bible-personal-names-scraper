@@ -80,6 +80,9 @@ export default function BibleScraper() {
   const [usageError, setUsageError] = useState<string | null>(null);
   const [processedCount, setProcessedCount] = useState<number>(0);
 
+  // LLM provider selector
+  const [llmProvider, setLlmProvider] = useState<'openai' | 'gemma'>('openai');
+
   const contentRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -116,15 +119,18 @@ export default function BibleScraper() {
   };
 
   const isAtWarningThreshold = (): boolean => {
+    if (llmProvider === 'gemma') return false; // no warning for Gemma
     const tokens = getCurrentTokens();
     return tokens >= TOKEN_WARNING_THRESHOLD && tokens < TOKEN_LIMIT_THRESHOLD;
   };
 
   const isAtLimitThreshold = (): boolean => {
+    if (llmProvider === 'gemma') return false; // no hard stop for Gemma
     return getCurrentTokens() >= TOKEN_LIMIT_THRESHOLD;
   };
 
   const canProcess = (): boolean => {
+    if (llmProvider === 'gemma') return true; // Gemma not limited by token budget
     return !isAtLimitThreshold();
   };
 
@@ -179,7 +185,7 @@ export default function BibleScraper() {
     if (processingVerse || isBatchProcessing || isBookProcessing || !canProcess()) return;
     setProcessingVerse(verseNum);
     try {
-      const result = await processVerse(selectedBook, selectedChapter, verseNum);
+      const result = await processVerse(selectedBook, selectedChapter, verseNum, llmProvider);
       setVerseStatuses(prev => ({
         ...prev,
         [verseNum]: { processed: true, names: result.names }
@@ -212,7 +218,7 @@ export default function BibleScraper() {
     if (processingVerse || reprocessingVerse || isBatchProcessing || isBookProcessing || !canProcess()) return;
     setReprocessingVerse(verseNum);
     try {
-      const result = await reprocessVerse(selectedBook, selectedChapter, verseNum);
+      const result = await reprocessVerse(selectedBook, selectedChapter, verseNum, llmProvider);
       setVerseStatuses(prev => ({
         ...prev,
         [verseNum]: { processed: true, names: result.names as ExtractedName[] }
@@ -250,7 +256,7 @@ export default function BibleScraper() {
       
       const v = unprocessedVerses[i];
       try {
-        const result = await processVerse(selectedBook, selectedChapter, v.verse);
+        const result = await processVerse(selectedBook, selectedChapter, v.verse, llmProvider);
         setVerseStatuses(prev => ({
           ...prev,
           [v.verse]: { processed: true, names: result.names }
@@ -335,7 +341,7 @@ export default function BibleScraper() {
         
         const v = unprocessedVerses[i];
         try {
-          const result = await processVerse(selectedBook, chap, v.verse);
+          const result = await processVerse(selectedBook, chap, v.verse, llmProvider);
           
           // Update verse status in real-time (same as batch process)
           setVerseStatuses(prev => ({
@@ -477,6 +483,17 @@ export default function BibleScraper() {
               <span className="font-mono font-bold text-blue-600">{usageStats.requests?.toLocaleString() || 0}</span>
             </div>
           )}
+          <div className="flex items-center gap-2 bg-slate-100 px-3 py-1.5 rounded-lg text-slate-700 border border-slate-200">
+            <span className="text-[11px] uppercase tracking-wide font-semibold">LLM</span>
+            <select
+              value={llmProvider}
+              onChange={(e) => setLlmProvider(e.target.value as 'openai' | 'gemma')}
+              className="text-sm bg-white border border-slate-300 rounded px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              <option value="openai">OpenAI</option>
+              <option value="gemma">Gemma (vLLM)</option>
+            </select>
+          </div>
           <button
             onClick={updateUsage}
             className="text-xs bg-slate-100 px-3 py-1.5 rounded-lg hover:bg-slate-200 transition-colors disabled:opacity-60"
